@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'VeloniumAdMobAdapter'
-  s.version          = '1.0.1'
+  s.version          = '1.0.0'
   s.summary          = 'AdMob mediation adapter for VeloniumSDK'
   s.description      = <<-DESC
     This adapter enables AdMob mediation support for VeloniumSDK.
@@ -11,7 +11,7 @@ Pod::Spec.new do |s|
   s.homepage         = 'https://github.com/VeloniumLTD/Velonium-SDK-iOS'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
   s.author           = { 'Velonium' => 'support@velonium.com' }
-  s.source           = { :git => 'https://github.com/VeloniumLTD/Velonium-SDK-iOS.git', :tag => s.version.to_s }
+  s.source           = { :git => 'https://github.com/VeloniumLTD/veloniumsdk-ios-admob-adapter.git', :tag => s.version.to_s }
   
   s.ios.deployment_target = '15.6'
   s.swift_version = '5.0'
