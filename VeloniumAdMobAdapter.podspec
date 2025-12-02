@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'VeloniumAdMobAdapter'
-  s.version          = '1.0.2'
+  s.version          = '1.0.4'
   s.module_name = s.name
   s.summary          = 'AdMob mediation adapter for VeloniumSDK'
   s.description      = <<-DESC
@@ -25,8 +25,7 @@ Pod::Spec.new do |s|
   s.dependency 'Google-Mobile-Ads-SDK', '~> 12.0'
     
   # Include AdMob adapter source files
-  s.source_files = 'AdMobMediationAdapter/**/*.{swift,h,m}'
-  s.public_header_files = 'AdMobMediationAdapter/**/*.h'
+  s.source_files = 'AdMobMediationAdapter/**/*.swift'
   
   s.requires_arc = true
   
