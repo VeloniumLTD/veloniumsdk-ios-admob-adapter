@@ -8,8 +8,16 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
     
     // MARK: - Auto-Initialization
     
+    // All static state below is only touched on the main thread.
+    
     // Track if auto-initialization has been triggered
     private static var autoInitTriggered = false
+    // Velonium.initializeSDK(...) has run (exactly once)
+    private static var sdkInitialized = false
+    // Load requests that arrived before initialization finished
+    private static var pendingReadyBlocks: [() -> Void] = []
+    // Fallback: initialize with cached/default values if configs never complete
+    private static let initFallbackTimeout: TimeInterval = 6.0
     
     // MARK: - Properties
     
@@ -36,36 +44,53 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
     }
     
     /// Trigger SDK auto-initialization (called once when adapter is first loaded)
-    /// Can be called externally for early initialization
+    /// Can be called externally for early initialization.
+    ///
+    /// Never blocks: both configs load asynchronously (cached values complete immediately) and the
+    /// SDK is initialized when both are done, or after `initFallbackTimeout` at the latest.
     @objc public static func triggerAutoInitialization() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { triggerAutoInitialization() }
+            return
+        }
         guard !autoInitTriggered else { return }
         autoInitTriggered = true
-                        
-        // Load configs in parallel for faster initialization
+        
+        // Load configs in parallel, asynchronously
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let remoteConfig = VeloniumRemoteConfig()
         let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
         
-        // Use dispatch group to wait for both configs to load in parallel
         let configGroup = DispatchGroup()
         
         configGroup.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            remoteConfig.loadConfig()
+        remoteConfig.loadConfigAsync {
             configGroup.leave()
         }
         
         configGroup.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            appConfig.loadConfig()
+        appConfig.loadConfigAsync {
             configGroup.leave()
         }
         
-        // Wait for both configs (with timeout)
-        let result = configGroup.wait(timeout: .now() + 3.0)
-        if result == .timedOut {
-            Log.warn("VeloniumMediationAdapter: Config loading timed out, using cached/default values")
+        configGroup.notify(queue: .main) {
+            completeInitialization(remoteConfig: remoteConfig, appConfig: appConfig, bundleId: bundleId)
         }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + initFallbackTimeout) {
+            guard !sdkInitialized else { return }
+            Log.warn("VeloniumMediationAdapter: Config loading timed out, using cached/default values")
+            completeInitialization(remoteConfig: remoteConfig, appConfig: appConfig, bundleId: bundleId)
+        }
+    }
+    
+    /// Runs the SDK initialization exactly once (main thread), then flushes queued load requests.
+    private static func completeInitialization(remoteConfig: VeloniumRemoteConfig,
+                                               appConfig: VeloniumAppConfig,
+                                               bundleId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !sdkInitialized else { return }
+        sdkInitialized = true
         
         let hostUrl = appConfig.getEndpointUrl()
         // Optional non-tracking twin of `endpoint`. The SDK picks between the two per bid request:
@@ -100,6 +125,25 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
             }
           
         } catch { }
+        
+        let queued = pendingReadyBlocks
+        pendingReadyBlocks = []
+        queued.forEach { $0() }
+    }
+    
+    /// Runs `block` on the main thread once the SDK is initialized: immediately if it already is,
+    /// otherwise queued until initialization completes. Also makes sure initialization was started.
+    static func whenReady(_ block: @escaping () -> Void) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { whenReady(block) }
+            return
+        }
+        if sdkInitialized {
+            block()
+            return
+        }
+        pendingReadyBlocks.append(block)
+        triggerAutoInitialization()
     }
     
     /// Map log level string to LogLevel object
@@ -125,11 +169,11 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
     // MARK: - Versions
     
     public static func adSDKVersion() -> GoogleMobileAds.VersionNumber {
-        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 6)
+        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 7)
     }
     
     public static func adapterVersion() -> GoogleMobileAds.VersionNumber {
-        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 6)
+        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 7)
     }
     
     // MARK: - Ad Loaders
@@ -139,15 +183,20 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         completionHandler: @escaping GADMediationBannerLoadCompletionHandler
     ) {
         Self.applyChildDirectedSignals()
-        ensureInitialized(from: adConfiguration)
-        print("Velonium sdk VeloniumMediationAdapter");
-        // Get publisherId from app config (S3) - use shared instance to avoid reloading
+        // GMA calls adapters on the main thread: never block it. Bid work runs once the SDK is
+        // initialized (immediately when it already is); GMA accepts a later completion call.
+        Self.whenReady {
+            self.performLoadBanner(for: adConfiguration, completionHandler: completionHandler)
+        }
+    }
+    
+    private func performLoadBanner(
+        for adConfiguration: GoogleMobileAds.MediationBannerAdConfiguration,
+        completionHandler: @escaping GADMediationBannerLoadCompletionHandler
+    ) {
+        // Get publisherId from app config (S3) - shared instance, already loaded by initialization
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
-        // Only load if not already loaded (check if publisherId is nil)
-        if !appConfig.isConfigLoaded {
-            appConfig.loadConfig()
-        }
         
         guard let publisherId = appConfig.getOrtbStringValue("app.publisher.id") ?? VeloniumMediationAdapter.parsePublisherIdOrConfigId(from: adConfiguration.credentials.settings) else {
             let error = createError(code: -24, message: "Missing publisherId in app config file.")
@@ -220,15 +269,20 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         completionHandler: @escaping GoogleMobileAds.GADMediationInterstitialLoadCompletionHandler
     ) {
         Self.applyChildDirectedSignals()
-        ensureInitialized(from: adConfiguration)
-        
-        // Get publisherId from app config (S3) - use shared instance to avoid reloading
+        // GMA calls adapters on the main thread: never block it. Bid work runs once the SDK is
+        // initialized (immediately when it already is); GMA accepts a later completion call.
+        Self.whenReady {
+            self.performLoadInterstitial(for: adConfiguration, completionHandler: completionHandler)
+        }
+    }
+    
+    private func performLoadInterstitial(
+        for adConfiguration: GoogleMobileAds.MediationInterstitialAdConfiguration,
+        completionHandler: @escaping GoogleMobileAds.GADMediationInterstitialLoadCompletionHandler
+    ) {
+        // Get publisherId from app config (S3) - shared instance, already loaded by initialization
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
-        // Only load if not already loaded (check if publisherId is nil)
-        if !appConfig.isConfigLoaded {
-            appConfig.loadConfig()
-        }
         
         guard let publisherId = appConfig.getOrtbStringValue("app.publisher.id") ?? VeloniumMediationAdapter.parsePublisherIdOrConfigId(from: adConfiguration.credentials.settings) else {
             let error = createError(code: -26, message: "Missing publisherId in app config file.")
@@ -280,15 +334,20 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         completionHandler: @escaping GoogleMobileAds.GADMediationRewardedLoadCompletionHandler
     ) {
         Self.applyChildDirectedSignals()
-        ensureInitialized(from: adConfiguration)
-        
-        // Get publisherId from app config (S3) - use shared instance to avoid reloading
+        // GMA calls adapters on the main thread: never block it. Bid work runs once the SDK is
+        // initialized (immediately when it already is); GMA accepts a later completion call.
+        Self.whenReady {
+            self.performLoadRewardedAd(for: adConfiguration, completionHandler: completionHandler)
+        }
+    }
+    
+    private func performLoadRewardedAd(
+        for adConfiguration: GoogleMobileAds.MediationRewardedAdConfiguration,
+        completionHandler: @escaping GoogleMobileAds.GADMediationRewardedLoadCompletionHandler
+    ) {
+        // Get publisherId from app config (S3) - shared instance, already loaded by initialization
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
-        // Only load if not already loaded (check if publisherId is nil)
-        if !appConfig.isConfigLoaded {
-            appConfig.loadConfig()
-        }
         
         guard let publisherId = appConfig.getOrtbStringValue("app.publisher.id") ?? VeloniumMediationAdapter.parsePublisherIdOrConfigId(from: adConfiguration.credentials.settings) else {
             let error = createError(code: -28, message: "Missing publisherId in app config file.")
@@ -395,18 +454,6 @@ private extension VeloniumMediationAdapter {
         return nil
     }
     
-    func ensureInitialized(from adConfiguration: GoogleMobileAds.MediationBannerAdConfiguration) {
-        guard Self.parsePublisherId(from: adConfiguration.credentials.settings) != nil else { return }
-    }
-    
-    func ensureInitialized(from adConfiguration: GoogleMobileAds.MediationInterstitialAdConfiguration) {
-        guard (Self.parsePublisherId(from: adConfiguration.credentials.settings) != nil) else { return }
-    }
-    
-    func ensureInitialized(from adConfiguration: GoogleMobileAds.MediationRewardedAdConfiguration) {
-        guard (Self.parsePublisherId(from: adConfiguration.credentials.settings) != nil) else { return }
-    }
-    
     static func parsePublisherId(from configuration: GoogleMobileAds.MediationServerConfiguration) -> String? {
         for creds in configuration.credentials {
             if let publisherId = parsePublisherId(from: creds.settings) {
@@ -417,10 +464,10 @@ private extension VeloniumMediationAdapter {
     }
     
     static func parsePublisherId(from settings: [String: Any]) -> String? {
-        // First try to get from app config (S3) - this is now the primary source
+        // First try to get from app config (S3) - this is now the primary source.
+        // Uses the shared instance loaded during initialization (no network I/O here).
         let bundleId = Bundle.main.bundleIdentifier ?? ""
-        let appConfig = VeloniumAppConfig(bundleId: bundleId)
-        appConfig.loadConfig()
+        let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
         if let publisherId = appConfig.getOrtbStringValue("app.publisher.id"), !publisherId.isEmpty {
             return publisherId
         }
@@ -477,10 +524,9 @@ private extension VeloniumMediationAdapter {
             return bidfloor
         }
         
-        // Fallback: Try to get from app config (loaded from S3)
+        // Fallback: Try to get from app config (loaded from S3 during initialization)
         let bundleId = Bundle.main.bundleIdentifier ?? ""
-        let appConfig = VeloniumAppConfig(bundleId: bundleId)
-        appConfig.loadConfig()
+        let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
         if let bidfloorStr = appConfig.getOrtbStringValue("imp.0.bidfloor"),
            let bidfloor = Double(bidfloorStr),
            bidfloor > 0 {
@@ -556,10 +602,9 @@ private extension VeloniumMediationAdapter {
     /// This is used to construct the App Store URL.
     /// No longer reads from AdMob UI - only from app config file.
     static func parseAppId(from settings: [String: Any]) -> String? {
-        // Get from app config (S3) - this is now the primary source
+        // Get from app config (S3) - this is now the primary source (shared, already loaded)
         let bundleId = Bundle.main.bundleIdentifier ?? ""
-        let appConfig = VeloniumAppConfig(bundleId: bundleId)
-        appConfig.loadConfig()
+        let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
         if let itunesId = appConfig.itunesId, !itunesId.isEmpty {
             return itunesId
         }

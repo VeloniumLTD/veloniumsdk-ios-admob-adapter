@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'VeloniumAdMobAdapter'
-  s.version          = '1.0.6'
+  s.version          = '1.0.7'
   s.module_name = s.name
   s.summary          = 'AdMob mediation adapter for VeloniumSDK'
   s.description      = <<-DESC

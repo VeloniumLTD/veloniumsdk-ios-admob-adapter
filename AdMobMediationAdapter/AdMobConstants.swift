@@ -6,5 +6,5 @@ import Foundation
 public class AdMobConstants: NSObject {
     
     public static let VeloniumAdMobEventExtrasLabel = "VeloniumAdMobCustomEventExtras"
-    public static let VeloniumAdMobRewardedAdapterVersion = "1.0.6"
+    public static let VeloniumAdMobRewardedAdapterVersion = "1.0.7"
 }
