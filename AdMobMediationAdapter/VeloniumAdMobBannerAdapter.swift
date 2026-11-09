@@ -2,8 +2,8 @@
 
 
 import Foundation
-import GoogleMobileAds
 import VeloniumSDK
+import GoogleMobileAds
 
 @objc(VeloniumAdMobBannerAdapter)
 public class VeloniumAdMobBannerAdapter:
@@ -21,12 +21,14 @@ public class VeloniumAdMobBannerAdapter:
     weak var delegate: GoogleMobileAds.MediationBannerAdEventDelegate?
     var adConfiguration: GoogleMobileAds.MediationBannerAdConfiguration?
     var completionHandler: GADMediationBannerLoadCompletionHandler?
-    
+        
     public func loadBanner(
         for adConfiguration: GoogleMobileAds.MediationBannerAdConfiguration,
         completionHandler: @escaping GADMediationBannerLoadCompletionHandler
     ) {
+        // MARK: - Performance: Adapter Entry Point
 
+        print("Velonium SDK - Loading Banner");
         self.adConfiguration = adConfiguration
         self.completionHandler = completionHandler
         guard let serverParameter = adConfiguration.credentials.settings["parameter"] as? String else {
@@ -35,8 +37,7 @@ public class VeloniumAdMobBannerAdapter:
             delegate = completionHandler(nil, error)
             return
         }
-
-
+        
         guard let eventExtras = adConfiguration.extras as? GoogleMobileAds.CustomEventExtras,
               let eventExtrasDictionary = eventExtras.extras(forLabel: AdMobConstants.VeloniumAdMobEventExtrasLabel),
               !eventExtrasDictionary.isEmpty else {
@@ -51,8 +52,7 @@ public class VeloniumAdMobBannerAdapter:
             return
         }
         
-        
-        guard AdMobMediationUtils.isServerParameterInTargetingInfoDict(serverParameter, targetingInfo) else {
+        guard MediationUtils.isServerParameterInTargetingInfoDict(serverParameter, targetingInfo) else {
             let error = AdMobAdaptersError.wrongServerParameter
             delegate = completionHandler(nil, error)
             return
@@ -71,7 +71,7 @@ public class VeloniumAdMobBannerAdapter:
         }
         
         let frame = CGRect(origin: .zero, size: bid.size)
-        
+    
         displayView = DisplayView(frame: frame, bid: bid, configId: configId)
         displayView?.interactionDelegate = self
         displayView?.loadingDelegate = self
@@ -99,12 +99,14 @@ public class VeloniumAdMobBannerAdapter:
     // MARK: - DisplayViewLoadingDelegate
     
     public func displayViewDidLoadAd(_ displayViewManager: UIView) {
+        // MARK: - Performance: Ad Loaded
         if let handler = completionHandler {
             delegate = handler(self, nil)
         }
     }
     
     public func displayView(_ displayViewManager: UIView, didFailWithError error: Error) {
+        // MARK: - Performance: Ad Failed
         if let handler = completionHandler {
             delegate = handler(nil, error)
         }

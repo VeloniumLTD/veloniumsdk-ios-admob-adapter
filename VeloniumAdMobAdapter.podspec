@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'VeloniumAdMobAdapter'
-  s.version          = '1.0.4'
+  s.version          = '1.0.5'
   s.module_name = s.name
   s.summary          = 'AdMob mediation adapter for VeloniumSDK'
   s.description      = <<-DESC
@@ -32,7 +32,11 @@ Pod::Spec.new do |s|
   # Add compiler flags to ensure VeloniumSDK headers are available
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
-    'CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES' => 'YES'
+    'CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES' => 'YES',
+    # Google Mobile Ads loads the adapter by class name at runtime, so no Objective-C
+    # header is needed. Generating it fails on Xcode 26 because the generated header
+    # references VeloniumSDK Swift protocols that have no Objective-C header.
+    'SWIFT_INSTALL_OBJC_HEADER' => 'NO'
   }
 end
 

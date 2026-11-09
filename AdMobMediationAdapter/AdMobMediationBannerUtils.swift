@@ -1,8 +1,8 @@
 
 
 import Foundation
-import VeloniumSDK
 import GoogleMobileAds
+import VeloniumSDK
 
 @objcMembers
 public class AdMobMediationBannerUtils: NSObject, VeloniumMediationDelegate {

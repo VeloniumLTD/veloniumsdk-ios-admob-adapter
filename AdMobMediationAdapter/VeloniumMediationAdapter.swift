@@ -1,5 +1,4 @@
 import Foundation
-
 import UIKit
 import GoogleMobileAds
 import VeloniumSDK
@@ -37,10 +36,11 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
     }
     
     /// Trigger SDK auto-initialization (called once when adapter is first loaded)
-    private static func triggerAutoInitialization() {
+    /// Can be called externally for early initialization
+    @objc public static func triggerAutoInitialization() {
         guard !autoInitTriggered else { return }
         autoInitTriggered = true
-                
+                        
         // Load configs in parallel for faster initialization
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let remoteConfig = VeloniumRemoteConfig()
@@ -72,19 +72,21 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         Velonium.shared.customStatusEndpoint = statusUrl
         
         Velonium.shared.logLevel = mapLogLevel(remoteConfig.logLevel)
-        Velonium.shared.shareGeoLocation = true
         
-        // Set source app
-        Targeting.shared.sourceapp = bundleId
+        // Set source app (iTunes ID from S3 config, fallback to bundle)
+        if let itunesId = appConfig.itunesId, !itunesId.isEmpty {
+            Targeting.shared.sourceapp = itunesId
+        } else {
+            Targeting.shared.sourceapp = bundleId
+        }
         
         // Initialize Velonium SDK with server URL
         do {
             let gadVersion = string(for: MobileAds.shared.versionNumber)
+            print("Velonium SDK - initializeSDK()");
             try Velonium.initializeSDK(serverURL: hostUrl, gadMobileAdsVersion: gadVersion, nil)
-        } catch {
-            // Log error but don't try fallback (fallback URL removed - use app config endpoint instead)
-            Log.error("VeloniumMediationAdapter: Failed to initialize SDK with host URL: \(hostUrl)")
-        }
+          
+        } catch { }
     }
     
     /// Map log level string to LogLevel object
@@ -110,11 +112,11 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
     // MARK: - Versions
     
     public static func adSDKVersion() -> GoogleMobileAds.VersionNumber {
-        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 0)
+        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 5)
     }
     
     public static func adapterVersion() -> GoogleMobileAds.VersionNumber {
-        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 0)
+        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 5)
     }
     
     // MARK: - Ad Loaders
@@ -123,17 +125,18 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         for adConfiguration: GoogleMobileAds.MediationBannerAdConfiguration,
         completionHandler: @escaping GADMediationBannerLoadCompletionHandler
     ) {
+        Self.applyChildDirectedSignals()
         ensureInitialized(from: adConfiguration)
-
+        print("Velonium sdk VeloniumMediationAdapter");
         // Get publisherId from app config (S3) - use shared instance to avoid reloading
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
         // Only load if not already loaded (check if publisherId is nil)
-        if appConfig.publisherId == nil {
+        if !appConfig.isConfigLoaded {
             appConfig.loadConfig()
         }
-
-        guard let publisherId = appConfig.publisherId ?? VeloniumMediationAdapter.parsePublisherIdOrConfigId(from: adConfiguration.credentials.settings) else {
+        
+        guard let publisherId = appConfig.getOrtbStringValue("app.publisher.id") ?? VeloniumMediationAdapter.parsePublisherIdOrConfigId(from: adConfiguration.credentials.settings) else {
             let error = createError(code: -24, message: "Missing publisherId in app config file.")
             _ = completionHandler(nil, error)
             return
@@ -141,7 +144,7 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         
         let size = adConfiguration.adSize.size
         let collector = BidCollector()
-
+        
         bannerMediationUnit = MediationBannerAdUnit(
             configID: publisherId,
             size: CGSize(width: size.width, height: size.height),
@@ -155,39 +158,39 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         if let bidfloor = Self.parseBidfloor(from: adConfiguration.credentials.settings) {
             bannerMediationUnit?.setBidfloor(bidfloor)
         }
-
+        
         // Set tagid if available (from AdMob UI custom event parameter)
         if let tagid = Self.parseTagId(from: adConfiguration.credentials.settings) {
             bannerMediationUnit?.setTagId(tagid)
         }
-
+        
         // Set gpid if available (from AdMob UI custom event parameter)
         if let gpid = Self.parseGpid(from: adConfiguration.credentials.settings) {
             bannerMediationUnit?.setGPID(gpid)
         }
-
+        
         // Automatically detect and set ad position
         let detectedPosition = Self.detectAdPosition(
             adSize: size,
             topViewController: adConfiguration.topViewController
         )
         bannerMediationUnit?.adPosition = detectedPosition
-
+        
         // If banner size is 320x50, add 300x50 as additional size
         if size.width == 320 && size.height == 50 {
             bannerMediationUnit?.additionalSizes = [CGSize(width: 300, height: 50)]
         }
-        print(publisherId)
-
+                
         bannerMediationUnit?.fetchDemand { [weak self] result in
             guard let self = self else { return }
-
+                        
             guard let bid = collector.collectedBid else {
                 let error = self.createError(code: -25, message: "No banner bid returned from Velonium server.")
                 _ = completionHandler(nil, error)
+                self.bannerMediationUnit = nil
                 return
             }
-
+                        
             self.bannerAdapter = VeloniumAdMobBannerAdapter()
             self.bannerAdapter?.render(
                 bid: bid,
@@ -195,6 +198,7 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
                 for: adConfiguration,
                 completionHandler: completionHandler
             )
+            self.bannerMediationUnit = nil
         }
     }
     
@@ -202,37 +206,51 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         for adConfiguration: GoogleMobileAds.MediationInterstitialAdConfiguration,
         completionHandler: @escaping GoogleMobileAds.GADMediationInterstitialLoadCompletionHandler
     ) {
+        Self.applyChildDirectedSignals()
         ensureInitialized(from: adConfiguration)
         
         // Get publisherId from app config (S3) - use shared instance to avoid reloading
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
         // Only load if not already loaded (check if publisherId is nil)
-        if appConfig.publisherId == nil {
+        if !appConfig.isConfigLoaded {
             appConfig.loadConfig()
         }
         
-        guard let publisherId = appConfig.publisherId ?? VeloniumMediationAdapter.parsePublisherIdOrConfigId(from: adConfiguration.credentials.settings) else {
+        guard let publisherId = appConfig.getOrtbStringValue("app.publisher.id") ?? VeloniumMediationAdapter.parsePublisherIdOrConfigId(from: adConfiguration.credentials.settings) else {
             let error = createError(code: -26, message: "Missing publisherId in app config file.")
             _ = completionHandler(nil, error)
             return
         }
         
-        // VeloniumSDK handles everything internally: sends two requests, collects bids, picks winner
+        // Use dual-request approach - SDK sends BOTH banner and video requests separately
+        // This matches Android implementation and provides better CPM comparison
+        let bannerAdSize = CGSize(width: 320, height: 480)
+        let bannerAdditionalSizes = [
+            CGSize(width: 480, height: 320),  // Landscape
+            CGSize(width: 300, height: 250),  // Medium rectangle
+            CGSize(width: 728, height: 90),   // Leaderboard
+            CGSize(width: 160, height: 600)    // Skyscraper
+        ]
+        
         MediationInterstitialAdUnit.fetchBothFormats(
             bannerConfigId: publisherId,
             videoConfigId: publisherId,
+            bannerAdSize: bannerAdSize,
+            bannerAdditionalSizes: bannerAdditionalSizes,
             videoMinDuration: 5,
             videoMaxDuration: 600
         ) { [weak self] winningBid in
             guard let self = self else { return }
             
             guard let bid = winningBid else {
-                let error = self.createError(code: -27, message: "No bid returned from Velonium server (neither banner nor video).")
+                let error = self.createError(code: -27, message: "No bid returned from Velonium server.")
                 _ = completionHandler(nil, error)
+                self.interstitialMediationUnit = nil
                 return
             }
-                    
+        
+            // Create adapter and render the winning bid
             self.interstitialAdapter = VeloniumAdMobInterstitialAdapter()
             self.interstitialAdapter?.render(
                 bid: bid,
@@ -240,6 +258,7 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
                 for: adConfiguration,
                 completionHandler: completionHandler
             )
+            self.interstitialMediationUnit = nil
         }
     }
     
@@ -247,17 +266,18 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         for adConfiguration: GoogleMobileAds.MediationRewardedAdConfiguration,
         completionHandler: @escaping GoogleMobileAds.GADMediationRewardedLoadCompletionHandler
     ) {
+        Self.applyChildDirectedSignals()
         ensureInitialized(from: adConfiguration)
         
         // Get publisherId from app config (S3) - use shared instance to avoid reloading
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let appConfig = VeloniumAppConfig.shared(bundleId: bundleId)
         // Only load if not already loaded (check if publisherId is nil)
-        if appConfig.publisherId == nil {
+        if !appConfig.isConfigLoaded {
             appConfig.loadConfig()
         }
         
-        guard let publisherId = appConfig.publisherId ?? VeloniumMediationAdapter.parsePublisherIdOrConfigId(from: adConfiguration.credentials.settings) else {
+        guard let publisherId = appConfig.getOrtbStringValue("app.publisher.id") ?? VeloniumMediationAdapter.parsePublisherIdOrConfigId(from: adConfiguration.credentials.settings) else {
             let error = createError(code: -28, message: "Missing publisherId in app config file.")
             _ = completionHandler(nil, error)
             return
@@ -295,6 +315,7 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
             guard let bid = collector.collectedBid else {
                 let error = self.createError(code: -29, message: "No bid returned from Velonium server.")
                 _ = completionHandler(nil, error)
+                self.rewardedMediationUnit = nil
                 return
             }
             
@@ -306,6 +327,7 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
                 for: adConfiguration,
                 completionHandler: completionHandler
             )
+            self.rewardedMediationUnit = nil
         }
     }
     
@@ -313,8 +335,7 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         for adConfiguration: GoogleMobileAds.MediationNativeAdConfiguration,
         completionHandler: @escaping GoogleMobileAds.GADMediationNativeLoadCompletionHandler
     ) {
-        NSLog("[VeloniumSDK] AdMob Adapter: loadNativeAd() called - DISABLED")
-        let error = createError(code: -30, message: "Native ads are not supported in this version.")
+        let error = createError(code: -30, message: "Native ads not supported.")
         _ = completionHandler(nil, error)
     }
     
@@ -330,6 +351,36 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
 // MARK: - Private Helpers
 
 private extension VeloniumMediationAdapter {
+
+    // MARK: - COPPA / child-directed signals
+
+    /// Mirrors Google's child-directed / under-age-of-consent tags into Velonium's COPPA flag
+    /// before each bid request is built. AdMob/Unity publishers have no Velonium API, so these
+    /// tags are the only signal available. GMA 12+ no longer exposes `childDirectedTreatment`
+    /// on the mediation ad configuration, so the global request configuration is the source.
+    ///   - child-directed == true OR under-age-of-consent == true -> COPPA on
+    ///   - otherwise child-directed == false                       -> COPPA off
+    ///   - otherwise (unspecified)                                 -> leave the current setting untouched
+    static func applyChildDirectedSignals() {
+        let requestConfiguration = GoogleMobileAds.MobileAds.shared.requestConfiguration
+        if let coppa = coppaValue(
+            childDirectedTreatment: requestConfiguration.tagForChildDirectedTreatment,
+            underAgeOfConsent: requestConfiguration.tagForUnderAgeOfConsent
+        ) {
+            Targeting.shared.subjectToCOPPA = coppa
+        }
+    }
+
+    /// Pure mapping (nil = leave untouched); kept separate so it can be unit tested.
+    static func coppaValue(childDirectedTreatment: NSNumber?, underAgeOfConsent: NSNumber?) -> Bool? {
+        if childDirectedTreatment?.boolValue == true || underAgeOfConsent?.boolValue == true {
+            return true
+        }
+        if let childDirectedTreatment = childDirectedTreatment {
+            return childDirectedTreatment.boolValue
+        }
+        return nil
+    }
     
     func ensureInitialized(from adConfiguration: GoogleMobileAds.MediationBannerAdConfiguration) {
         guard Self.parsePublisherId(from: adConfiguration.credentials.settings) != nil else { return }
@@ -357,7 +408,7 @@ private extension VeloniumMediationAdapter {
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let appConfig = VeloniumAppConfig(bundleId: bundleId)
         appConfig.loadConfig()
-        if let publisherId = appConfig.publisherId, !publisherId.isEmpty {
+        if let publisherId = appConfig.getOrtbStringValue("app.publisher.id"), !publisherId.isEmpty {
             return publisherId
         }
         
@@ -417,8 +468,10 @@ private extension VeloniumMediationAdapter {
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let appConfig = VeloniumAppConfig(bundleId: bundleId)
         appConfig.loadConfig()
-        if let bidfloorNum = appConfig.bidfloor, bidfloorNum.doubleValue > 0 {
-            return bidfloorNum.doubleValue
+        if let bidfloorStr = appConfig.getOrtbStringValue("imp.0.bidfloor"),
+           let bidfloor = Double(bidfloorStr),
+           bidfloor > 0 {
+            return bidfloor
         }
         
         // Note: AdMob's "Network eCPM" from ad unit mapping UI is not automatically passed
@@ -598,8 +651,7 @@ private extension VeloniumMediationAdapter {
 
 // MARK: - Bid Collector
 
-/// Helper class to collect bids from MediationAdUnit fetchDemand calls.
-/// Used for banner and rewarded ads. Interstitial ads use SDK's internal collector via fetchBothFormats().
+/// Helper class to collect bids from MediationAdUnit fetchDemand calls
 private final class BidCollector: VeloniumMediationDelegate {
     
     var collectedBid: Bid?

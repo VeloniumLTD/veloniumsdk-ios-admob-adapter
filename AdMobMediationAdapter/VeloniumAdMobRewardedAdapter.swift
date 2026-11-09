@@ -14,8 +14,8 @@
  */
 
 import Foundation
-import GoogleMobileAds
 import VeloniumSDK
+import GoogleMobileAds
 
 @objc(VeloniumAdMobRewardedAdapter)
 public class VeloniumAdMobRewardedAdapter:
@@ -30,15 +30,12 @@ public class VeloniumAdMobRewardedAdapter:
     var adConfiguration: GoogleMobileAds.MediationRewardedAdConfiguration?
     var completionHandler: GADMediationRewardedLoadCompletionHandler?
     
-    deinit {
-        NSLog("[VeloniumSDK] REWARDED: VeloniumAdMobRewardedAdapter deallocated")
-    }
+    deinit {}
     
     public func loadRewardedAd(
         for adConfiguration: GoogleMobileAds.MediationRewardedAdConfiguration,
         completionHandler: @escaping GADMediationRewardedLoadCompletionHandler
     ) {
-       
         self.adConfiguration = adConfiguration
         self.completionHandler = completionHandler
         guard let serverParameter = adConfiguration.credentials.settings["parameter"] as? String else {
@@ -46,7 +43,7 @@ public class VeloniumAdMobRewardedAdapter:
             delegate = completionHandler(nil, error)
             return
         }
-                
+        
         guard let eventExtras = adConfiguration.extras as? GoogleMobileAds.CustomEventExtras,
               let eventExtrasDictionary = eventExtras.extras(forLabel: AdMobConstants.VeloniumAdMobEventExtrasLabel),
               !eventExtrasDictionary.isEmpty else {
@@ -60,8 +57,8 @@ public class VeloniumAdMobRewardedAdapter:
             delegate = completionHandler(nil, error)
             return
         }
-                
-        guard AdMobMediationUtils.isServerParameterInTargetingInfoDict(serverParameter, targetingInfo) else {
+        
+        guard MediationUtils.isServerParameterInTargetingInfoDict(serverParameter, targetingInfo) else {
             let error = AdMobAdaptersError.wrongServerParameter
             delegate = completionHandler(nil, error)
             return
@@ -72,13 +69,14 @@ public class VeloniumAdMobRewardedAdapter:
             delegate = completionHandler(nil, error)
             return
         }
-                
+        
         guard let configId = eventExtrasDictionary[PBMMediationConfigIdKey] as? String else {
             let error = AdMobAdaptersError.noConfigIDInEventExtras
             delegate = completionHandler(nil, error)
             return
         }
         
+        // Create interstitial controller and set it as rewarded
         interstitialController = InterstitialController(bid: bid, configId: configId)
         interstitialController?.isRewarded = true
         interstitialController?.loadingDelegate = self
@@ -107,6 +105,7 @@ public class VeloniumAdMobRewardedAdapter:
                 
         controller.loadingDelegate = self
         controller.interactionDelegate = self
+        
         controller.loadAd()
     }
     
@@ -116,6 +115,7 @@ public class VeloniumAdMobRewardedAdapter:
         guard let controller = interstitialController else {
             return
         }
+        
         controller.show()
     }
     
@@ -127,7 +127,7 @@ public class VeloniumAdMobRewardedAdapter:
         }
     }
     
-    public func interstitialController(_ interstitialController: VeloniumSDKInterstitialControllerProtocol, didFailWithError error: Error) {
+    public func interstitialController(_ interstitialController: VeloniumSDKInterstitialControllerProtocol, didFailWithError error: Error) {        
         if let handler = completionHandler {
             delegate = handler(nil, error)
         }
@@ -136,6 +136,7 @@ public class VeloniumAdMobRewardedAdapter:
     // MARK: - InterstitialControllerInteractionDelegate
     
     public func trackImpression(forInterstitialController: VeloniumSDKInterstitialControllerProtocol) {
+        print("|Velonium SDK] | REWARDED ADAPTE - Tracking impression")
         delegate?.reportImpression()
     }
     
@@ -160,10 +161,6 @@ public class VeloniumAdMobRewardedAdapter:
     public func interstitialControllerDidCloseAd(_ interstitialController: VeloniumSDKInterstitialControllerProtocol) {
         delegate?.willDismissFullScreenView()
         delegate?.didDismissFullScreenView()
-        
-        self.interstitialController = nil
-        adConfiguration = nil
-        completionHandler = nil
     }
     
     public func viewControllerForModalPresentation(fromInterstitialController: VeloniumSDKInterstitialControllerProtocol) -> UIViewController? {

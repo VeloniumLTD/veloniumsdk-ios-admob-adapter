@@ -73,7 +73,7 @@ public class VeloniumAdMobNativeAdapter:
             return
         }
         
-        guard AdMobMediationUtils.isServerParameterInTargetingInfoDict(serverParameter, targetingInfo) else {
+        guard MediationUtils.isServerParameterInTargetingInfoDict(serverParameter, targetingInfo) else {
             let error = AdMobAdaptersError.wrongServerParameter
             delegate = completionHandler(nil, error)
             return

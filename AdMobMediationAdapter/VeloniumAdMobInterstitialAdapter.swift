@@ -14,8 +14,8 @@
  */
 
 import Foundation
-import GoogleMobileAds
 import VeloniumSDK
+import GoogleMobileAds
 
 @objc(VeloniumAdMobInterstitialAdapter)
 public class VeloniumAdMobInterstitialAdapter:
@@ -41,7 +41,7 @@ public class VeloniumAdMobInterstitialAdapter:
             delegate = completionHandler(nil, error)
             return
         }
-                
+        
         guard let eventExtras = adConfiguration.extras as? GoogleMobileAds.CustomEventExtras,
               let eventExtrasDictionary = eventExtras.extras(forLabel: AdMobConstants.VeloniumAdMobEventExtrasLabel),
               !eventExtrasDictionary.isEmpty else {
@@ -55,8 +55,8 @@ public class VeloniumAdMobInterstitialAdapter:
             delegate = completionHandler(nil, error)
             return
         }
-                
-        guard AdMobMediationUtils.isServerParameterInTargetingInfoDict(serverParameter, targetingInfo) else {
+        
+        guard MediationUtils.isServerParameterInTargetingInfoDict(serverParameter, targetingInfo) else {
             let error = AdMobAdaptersError.wrongServerParameter
             delegate = completionHandler(nil, error)
             return
@@ -67,7 +67,7 @@ public class VeloniumAdMobInterstitialAdapter:
             delegate = completionHandler(nil, error)
             return
         }
-                
+        
         guard let configId = eventExtrasDictionary[PBMMediationConfigIdKey] as? String else {
             let error = AdMobAdaptersError.noConfigIDInEventExtras
             delegate = completionHandler(nil, error)
@@ -121,6 +121,7 @@ public class VeloniumAdMobInterstitialAdapter:
     
         if let handler = completionHandler {
             delegate = handler(self, nil)
+        } else {
         }
     }
     
@@ -148,14 +149,38 @@ public class VeloniumAdMobInterstitialAdapter:
         delegate?.willPresentFullScreenView()
     }
     
-    public func interstitialControllerDidComplete(_ interstitialController: VeloniumSDKInterstitialControllerProtocol) {
-        // For interstitial, this is equivalent to dismiss
-        delegate?.didDismissFullScreenView()
-    }
     
     public func interstitialControllerDidCloseAd(_ interstitialController: VeloniumSDKInterstitialControllerProtocol) {
         delegate?.willDismissFullScreenView()
         delegate?.didDismissFullScreenView()
+        
+        // Cleanup to prevent memory leaks
+        cleanup()
+    }
+    
+    public func interstitialControllerDidComplete(_ interstitialController: VeloniumSDKInterstitialControllerProtocol) {
+        // For interstitial, this is equivalent to dismiss
+        delegate?.didDismissFullScreenView()
+        
+        // Cleanup to prevent memory leaks
+        cleanup()
+    }
+    
+    // MARK: - Cleanup
+    
+    private func cleanup() {
+        // Clear strong references to allow deallocation
+        interstitialController?.loadingDelegate = nil
+        interstitialController?.interactionDelegate = nil
+        interstitialController = nil
+        adConfiguration = nil
+        completionHandler = nil
+        delegate = nil
+    }
+    
+    deinit {
+        // Ensure cleanup on deallocation
+        cleanup()
     }
     
     public func viewControllerForModalPresentation(fromInterstitialController: VeloniumSDKInterstitialControllerProtocol) -> UIViewController? {

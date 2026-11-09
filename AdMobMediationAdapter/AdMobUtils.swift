@@ -2,6 +2,7 @@
 
 import Foundation
 import GoogleMobileAds
+import VeloniumSDK
 
 fileprivate let HBKeywordPrefix = "hb_"
 
