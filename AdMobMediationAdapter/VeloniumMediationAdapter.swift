@@ -68,6 +68,9 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         }
         
         let hostUrl = appConfig.getEndpointUrl()
+        // Optional non-tracking twin of `endpoint`. The SDK picks between the two per bid request:
+        // ATT authorized -> hostUrl, otherwise -> nonTrackingHostUrl (when configured).
+        let nonTrackingHostUrl = appConfig.getNonTrackingEndpointUrl()
         let statusUrl = remoteConfig.statusUrl
         Velonium.shared.customStatusEndpoint = statusUrl
         
@@ -84,7 +87,17 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
         do {
             let gadVersion = string(for: MobileAds.shared.versionNumber)
             print("Velonium SDK - initializeSDK()");
-            try Velonium.initializeSDK(serverURL: hostUrl, gadMobileAdsVersion: gadVersion, nil)
+            if let nonTrackingHostUrl {
+                do {
+                    try Velonium.initializeSDK(serverURL: hostUrl, nonTrackingURLString: nonTrackingHostUrl, gadMobileAdsVersion: gadVersion, nil)
+                } catch {
+                    // Invalid endpointNonTracking must not break initialization: fall back to 1.0.5 behaviour.
+                    Log.warn("VeloniumMediationAdapter: Invalid endpointNonTracking '\(nonTrackingHostUrl)', using endpoint for all requests")
+                    try Velonium.initializeSDK(serverURL: hostUrl, gadMobileAdsVersion: gadVersion, nil)
+                }
+            } else {
+                try Velonium.initializeSDK(serverURL: hostUrl, gadMobileAdsVersion: gadVersion, nil)
+            }
           
         } catch { }
     }
@@ -112,11 +125,11 @@ public class VeloniumMediationAdapter: NSObject, GoogleMobileAds.MediationAdapte
     // MARK: - Versions
     
     public static func adSDKVersion() -> GoogleMobileAds.VersionNumber {
-        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 5)
+        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 6)
     }
     
     public static func adapterVersion() -> GoogleMobileAds.VersionNumber {
-        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 5)
+        return GoogleMobileAds.VersionNumber(majorVersion: 1, minorVersion: 0, patchVersion: 6)
     }
     
     // MARK: - Ad Loaders
